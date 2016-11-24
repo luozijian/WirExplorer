@@ -1,0 +1,44 @@
+//************************************************************
+2010.9.24
+21日前使用winpcap都不能抓到数据包，而且使用别人提供的历程也不能获取自己计算机的ip网段和掩码，得到的是全0信息，同样这个程序拿到其他计算机上运行可以返回正确的结果，使用wiresharp也抓取不了我的数据包，在选择网络设备的时候它获取到我的ip是Unknow。开始以为是虚拟机的问题，即使把虚拟机的v8和v1网络关闭和卸载掉也不行。
+晚上重装系统后一切都好了，所有的历程都没有问题，可能是我计算机以前做了什么配置或中毒导致错误。
+
+22日拿别人的历程来学习分析数据包。基本了解数据包的封装形势。
+在分析迅雷下载时发现一个有趣的问题，其实知道原理也没什么大惊小怪的。
+学校A、B两台计算机同时下载同一个网络资源，A先下载10%，下载速度是600Kb/s以上，然后B开始下载，B的下载速度1-3Mb/s，其实迅雷给B一个种子这个种子就是局域网里的A，当B的下载量和A相等得的时候出现两个下载速度相同400Kb/s。奇怪的是实际上原来是B从A那里下载变成了A从B那里下载，而且似乎B还代理了A访问这个资源的能力。如果A上面的资源是1/148,B上的资源是28/147，A就仅仅从B那里下载，如果这时候B停止下载，A的下载速度就成了几Kb/s最后成0，除非A的种子数目不是1，这时候A、B的下载速度平分。
+
+23日使用iphlpapi函数库和winpcap函数库编写我的CResPro类，在使用pcap_breakloop函数来强制pcap_loop函数返回的时候出现问题，首先pcap_breakloop函数不能放在回调函数pcap_header函数里，必须放在其他线程下，对于线程我还不算太明白他的保护机制是怎么样的，猜想在同一线程下运行pcap_breakloop如同自杀。
+其次是pcap_breakloop我没有在任何头文件里搜索到他的声明，源代码文件也没有他的定义，用eXeScope看wpcap.dll的确有pcap_breakloop函数的接口，于是使用动态库的方式访问它。
+
+	typedef void (*PCAP_breakloop)(pcap_t*);
+
+	PCAP_breakloop pFunbreakloop;
+	HINSTANCE hInstance;
+
+	hInstance = LoadLibrary("wpcap.dll");
+	if(!hInstance)
+		printf("无法打开DLL文件\n");
+	pFunbreakloop = (PCAP_breakloop)GetProcAddress(hInstance,"pcap_breakloop");
+	if(breakloop) {
+		printf("找到函数入口\n");
+		getchar();
+		pFunbreakloop(pcap_handle);
+	}
+	FreeLibrary(hInstance);
+在线程主线程里调用这个pcap_breakloop或pcap_close都可以，但不要调用pcap_close多次，在主要线程里调用一次，在抓包线程结束时候在调用一次，多次调用会出错，pcap_breakloop可以调用多次，而且也不要在pcap_handle没有得到pcap_open_live的返回值调用这两个函数，同样出错。
+
+//************************************************************
+2010.9.25
+今天开始分析winpcap内部函数pcap_dump_open与pcap_dump所写的抓包文件格式。首先大骂自己三声SB，明明知道Wireshark是用winpcap写的（网站地址都是一家的），我还用例程写的软件和Wireshark同时抓包，然后Wireshark打开pcap文件，UE打开例程的文件outfile，然后两个文件做对比。实际上我把outfile改成outfile.pcap就可以用Wireshark打开了，找事情做。
+仅仅找到文件记录的信息结构，对于无关紧要的信息我没分析出来。
+pcap文件结构就是两部分：文件头+各个数据包。
+文件头的格式我是一点都没有解析出来，但是他是固定的长度，我后面的工程对他不感兴趣，读取时候直接跳过即可。
+数据包存储格式部分从0x18H字节开始，格式是：
+0x18H - 0x1bH     0x1cH - 0x1fH
+抓取时间4字节   + unknown（没解析出来）4字节
+0x20H - 0x23H     0x24H - 0x28H
+数据包长度4字节 + 数据包长度4字节（重复的）
+0x29H - ...
+数据包内容.....下一个数据包存储格式
+这里需要注意的是
+这里有人做了具体的分析。http://hi.baidu.com/lewvan/blog/item/b4d6381297786159f919b869.html
